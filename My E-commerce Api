@@ -1,0 +1,213 @@
+from flask import Flask, request, jsonify 
+from flask_migrate import Migrate 
+from flask_sqlalchemy import SQLAlchemy
+from flask_marshmallow import Marshmallow 
+from marshmallow import ValidationError 
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship 
+from sqlalchemy import Table, String, Column, Select,  ForeignKey, UniqueConstraint 
+from typing import List 
+import os, logging 
+from sqlalchemy import DateTime, func 
+
+ 
+app = Flask(__name__) 
+
+
+# MySQL database configuration 
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+mysqlconnector://root:abc12345@localhost/ecommerce_api' 
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False 
+
+
+class Base(DeclarativeBase):
+    pass 
+
+
+# Initialize SQLAlchemy and Marshmallow 
+
+db = SQLAlchemy(model_class=Base) 
+db.init_app(app)  # Create the link for our db to the MySQL connector string 
+ma = Marshmallow(app)  # Also able to validate etc 
+migrate = Migrate(app, db) 
+
+class User(Base):
+    __tablename__ = "users" 
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True) 
+    name: Mapped[str] = mapped_column(String(50)) 
+    email: Mapped[str] = mapped_column(String(200), unique=True)  # Ensure email is unique
+    address: Mapped[str] = mapped_column(String(100)) 
+    products = relationship('Product',  backref= 'user', lazy= True)  
+
+class Order(Base):
+    __tablename__ = "orders" 
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    order_date: Mapped[DateTime] = mapped_column(DateTime, default=func.now())  
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    product_id: Mapped[int] = mapped_column(ForeignKey('products.id'))  
+    
+class Product(Base):
+    __tablename__ = "products"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    product_name: Mapped[str] = mapped_column(String(100))
+    price: Mapped[float] = mapped_column(db.Float)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id'), nullable=False)
+    orders = relationship('Order', backref='product', lazy=True)
+
+
+class OrderProduct(Base):
+    __tablename__ = "order_products"
+    order_id: Mapped[int] = mapped_column(ForeignKey('orders.id'), primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey('products.id'), primary_key=True) 
+    __table_args__ = (UniqueConstraint('order_id', 'product_id', name='unique_order_product'),) 
+
+
+# Marshmallow Schemas
+class UserSchema(ma.SQLAlchemyAutoSchema):
+    class Meta:
+        model = User
+
+class OrderSchema(ma.SQLAlchemyAutoSchema):
+    class Meta:
+        model = Order
+
+class ProductSchema(ma.SQLAlchemyAutoSchema):
+    class Meta:
+        model = Product
+
+user_schema = UserSchema()
+users_schema = UserSchema(many=True)
+order_schema = OrderSchema()
+orders_schema = OrderSchema(many=True)
+product_schema = ProductSchema()
+products_schema = ProductSchema(many=True)
+
+# User Endpoints
+@app.route('/users', methods=['GET'])
+def get_users():
+    users = User.query.all()
+    return users_schema.jsonify(users)
+
+@app.route('/users/<id>', methods=['GET'])
+def get_user(id):
+    user = User.query.get(id)
+    return user_schema.jsonify(user)
+
+@app.route('/users', methods=['POST'])
+def add_user():
+    name = request.json['name']
+    address = request.json['address']
+    email = request.json['email']
+    new_user = User(name=name, address=address, email=email)
+    db.session.add(new_user)
+    db.session.commit()
+    return user_schema.jsonify(new_user)
+
+@app.route('/users/<id>', methods=['PUT'])
+def update_user(id):
+    user = User.query.get(id)
+    user.name = request.json['name']
+    user.address = request.json['address']
+    user.email = request.json['email']
+    db.session.commit()
+    return user_schema.jsonify(user)
+
+@app.route('/users/<id>', methods=['DELETE'])
+def delete_user(id):
+    user = User.query.get(id)
+    db.session.delete(user)
+    db.session.commit()
+    return user_schema.jsonify(user)
+
+# Product Endpoints
+@app.route('/products', methods=['GET'])
+def get_products():
+    products = Product.query.all()
+    return products_schema.jsonify(products)
+
+@app.route('/products/<id>', methods=['GET'])
+def get_product(id):
+    product = Product.query.get(id)
+    return product_schema.jsonify(product)
+
+@app.route('/products', methods=['POST'])
+def add_product():
+    product_name = request.json['product_name']
+    price = request.json['price']
+    new_product = Product(product_name=product_name, price=price)
+    db.session.add(new_product)
+    db.session.commit()
+    return product_schema.jsonify(new_product)
+
+@app.route('/products/<id>', methods=['PUT'])
+def update_product(id):
+    product = Product.query.get(id)
+    product.product_name = request.json['product_name']  
+    product.price = request.json['price']
+    db.session.commit()
+    return product_schema.jsonify(product)
+
+@app.route('/products/<id>', methods=['DELETE'])
+def delete_product(id):
+    product = Product.query.get(id)
+    db.session.delete(product)
+    db.session.commit()
+    return product_schema.jsonify(product)
+
+# Order Endpoints
+@app.route('/orders', methods=['POST'])
+def add_order():
+    user_id = request.json['user_id']
+    order_date = request.json['order_date']
+    new_order = Order(user_id=user_id, order_date=order_date)
+    db.session.add(new_order)
+    db.session.commit()
+    return order_schema.jsonify(new_order)
+
+@app.route('/orders/<order_id>/add_product/<product_id>', methods=['GET'])
+def add_product_to_order(order_id, product_id):
+    order_product = OrderProduct(order_id=order_id, product_id=product_id)
+    db.session.add(order_product)
+    db.session.commit()
+    return order_schema.jsonify(Order.query.get(order_id))
+
+@app.route('/orders/<order_id>/remove_product/<product_id>', methods=['DELETE'])
+def remove_product_from_order(order_id, product_id):
+    order_product = OrderProduct.query.get((order_id, product_id))
+    db.session.delete(order_product)
+    db.session.commit()
+    return order_schema.jsonify(Order.query.get(order_id))
+
+@app.route('/orders/user/<user_id>', methods=['GET'])
+def get_orders_by_user(user_id):
+    orders = Order.query.filter_by(user_id=user_id).all()
+    return orders_schema.jsonify(orders)
+
+@app.route('/orders/<order_id>/products', methods=['GET'])
+def get_products_in_order(order_id):
+    order_products = OrderProduct.query.filter_by(order_id=order_id).all()
+    products = [Product.query.get(op.product_id) for op in order_products]
+    return products_schema.jsonify(products)
+
+
+#Recreating Tables & Dropping Tables======== 
+if __name__ == '__main__':
+    with app.app_context():
+        #db.drop_all() #Drop all tables 
+        db.create_all()  # Create database tables
+    app.run(debug=True)
+
+
+
+#======== Validation and Error Handling ===== 
+
+@app.errorhandler(ValidationError)
+def handle_validation_error(e):
+    return jsonify(e.messages), 400
+
+@app.route('/users/<id>', methods=['GET'])
+def get_user(id):
+    user = User.query.get(id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    return user_schema.jsonify(user)
